@@ -1,8 +1,10 @@
-import {Flags} from '@oclif/core'
-import {CLICommand} from '../command'
+import { Flags } from '@oclif/core'
+import { CLICommand } from '../command'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
+import { promises as afs } from 'node:fs'
 
+import * as swc from '@swc/core'
 import browserify from 'browserify'
 import * as shelljs from 'shelljs'
 import Utils from '../utils'
@@ -15,12 +17,12 @@ export default class Bundle extends CLICommand {
     'Builds all the sources in the repository and generates a versioning file';
 
   static override flags = {
-    help: Flags.help({char: 'h'}),
-    folder: Flags.string({description: 'Subfolder to output to', required: false}),
+    help: Flags.help({ char: 'h' }),
+    folder: Flags.string({ description: 'Subfolder to output to', required: false }),
   };
 
   async run() {
-    const {flags} = await this.parse(Bundle)
+    const { flags } = await this.parse(Bundle)
 
     this.log(`Working directory: ${process.cwd()}`)
     this.log()
@@ -120,6 +122,50 @@ export default class Bundle extends CLICommand {
     })
   }
 
+  async transpile(outputDirectory: string) {
+    const cwd = process.cwd()
+    const srcDir = path.join(cwd, 'src')
+    if (fs.existsSync(outputDirectory)) {
+      Utils.deleteFolderRecursive(outputDirectory)
+    }
+
+    if (!fs.existsSync(srcDir)) {
+      this.error(`The src directory does not exist or has not been found, traversing '${cwd}'`)
+    }
+
+    fs.mkdirSync(outputDirectory)
+
+    const transpilePromises: Promise<any>[] = []
+    Utils.analyzeFolderRecursive(transpilePromises, srcDir, (filePath: string) => {
+      if (!filePath.endsWith('.ts')) {
+        return
+      }
+
+      return swc.transformFile(filePath, {
+        // Rant: WHAT THE FUCK IS THE DAMN POINT IF THE TEST FIELD DOESNT EVEN TEST ANYTHING
+        test: '.*\\.ts$',
+        sourceMaps: false,
+        jsc: {
+          parser: {
+            syntax: 'typescript',
+          },
+          keepClassNames: true,
+          target: 'esnext',
+        },
+        module: {
+          type: 'es6',
+          importInterop: 'node',
+        },
+      },
+      ).then(async swcOutput => {
+        await afs.writeFile(path.join(outputDirectory, path.relative(srcDir, filePath).replace(/\.ts$/, '.js')), swcOutput.code, 'utf-8')
+      })
+    }, (directoryPath: string) => {
+      fs.mkdirSync(path.join(outputDirectory, path.relative(srcDir, directoryPath)), {recursive: true})
+    })
+    await Promise.all(transpilePromises)
+  }
+
   async bundleSources(folder = '') {
     const cwd = process.cwd()
     const tmpTranspilePath = path.join(cwd, 'tmp')
@@ -127,7 +173,8 @@ export default class Bundle extends CLICommand {
 
     const transpileTime = this.time('Transpiling project', Utils.headingFormat)
     Utils.deleteFolderRecursive(tmpTranspilePath)
-    shelljs.exec('npx tsc --outDir tmp')
+    // shelljs.exec('npx tsc --outDir tmp')
+    await this.transpile(tmpTranspilePath)
     transpileTime.end()
 
     this.log()
@@ -189,32 +236,78 @@ export default class Bundle extends CLICommand {
 
     await Promise.all([
       // For 0.9 and above
+      // new Promise<void>(res => {
+      //   browserify([filePath], {standalone: 'Sources'})
+      //   .external(['axios', 'fs'])
+      //   .bundle()
+      //   .pipe(
+      //     fs.createWriteStream(path.join(outputPath, 'index.js')).on('finish', () => {
+      //       res()
+      //     }),
+      //   )
+      // }),
       new Promise<void>(res => {
-        browserify([filePath], {standalone: 'Sources'})
-        .external(['axios', 'fs'])
-        .bundle()
-        .pipe(
-          fs.createWriteStream(path.join(outputPath, 'index.js')).on('finish', () => {
-            res()
-          }),
-        )
+        swc.bundle({
+          workingDir: sourceDir,
+          target: 'browser',
+          module: {
+            // Iife: {},
+          },
+          externalModules: ['axios', 'fs'],
+          entry: {
+            web: filePath,
+          },
+          output: {
+            name: file,
+            path: outputPath,
+          },
+        }).then(async bundleResult => {
+          await afs.writeFile(path.join(outputPath, 'index.js'), bundleResult[file].code, 'utf-8')
+          res()
+        }).catch(error => {
+          console.log('An error occurred, please report the issue.')
+
+          throw error
+        })
       }),
 
       // For 0.8; ensures backwards compatibility with 0.7 sources
+      // new Promise<void>(res => {
+      //   browserify([filePath], {standalone: 'Sources'})
+      //   .external(['axios', 'fs'])
+      //   .bundle()
+      //   .pipe(
+      //     fs.createWriteStream(path.join(outputPath, 'source.js')).on('finish', () => {
+      //       res()
+      //     }),
+      //   )
+      // }),
       new Promise<void>(res => {
-        browserify([filePath], {standalone: 'Sources'})
-        .external(['axios', 'fs'])
-        .bundle()
-        .pipe(
-          fs.createWriteStream(path.join(outputPath, 'source.js')).on('finish', () => {
-            res()
-          }),
-        )
+        swc.bundle({
+          workingDir: sourceDir,
+          target: 'browser',
+          module: {},
+          externalModules: ['axios', 'fs'],
+          entry: {
+            web: filePath,
+          },
+          output: {
+            name: file,
+            path: outputPath,
+          },
+        }).then(async bundleResult => {
+          await afs.writeFile(path.join(outputPath, 'source.js'), bundleResult[file].code, 'utf-8')
+          res()
+        }).catch(error => {
+          console.log('An error occurred, please report the issue.')
+
+          throw error
+        })
       }),
     ])
   }
 
-  async generateHomepage(folder = '')  {
+  async generateHomepage(folder = '') {
     /*
      * Generate a homepage for the repository based on the package.json file and the generated versioning.json
      *
@@ -237,10 +330,10 @@ export default class Bundle extends CLICommand {
     // joining path of directory
     const basePath = process.cwd()
     const directoryPath = path.join(basePath, 'bundles', folder)
-    const packageFilePath  = path.join(basePath, 'package.json')
+    const packageFilePath = path.join(basePath, 'package.json')
     // homepage.pug file is added to the package during the prepack process
     const pugFilePath = path.join(__dirname, '../website-generation/homepage.pug')
-    const versioningFilePath  = path.join(directoryPath, 'versioning.json')
+    const versioningFilePath = path.join(directoryPath, 'versioning.json')
 
     // The homepage should only be generated if a package.json file exist at the root of the repo
     if (fs.existsSync(packageFilePath)) {
@@ -275,7 +368,7 @@ export default class Bundle extends CLICommand {
           noAddToPaperbackButton: true,
         }
       */
-      const repositoryData: {[id: string]: unknown} = {}
+      const repositoryData: { [id: string]: unknown } = {}
 
       repositoryData.repositoryName = packageData.repositoryName
       repositoryData.repositoryDescription = packageData.description

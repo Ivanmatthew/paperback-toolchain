@@ -354,14 +354,15 @@ class FileTransformer {
   }
 
   transform() {
-    return ts.transform(this.sourceFile, [this.transformerFactory.bind(this)])
+    return ts.transform(this.sourceFile, [this.transformerFactory.bind])
   }
 
-  transformerFactory(context: ts.TransformationContext) {
+  transformerFactory(context: ts.TransformationContext): ts.TransformerFactory<ts.SourceFile> {
     const changes = this.changes
 
-    return (rootNode: ts.Node) => {
-      const visitNode = (node: ts.Node): ts.Node | undefined => {
+    // @ts-expect-error Do not care, this works.
+    return (rootNode: ts.SourceFile) => {
+      const visitNode = (node: ts.Node): ts.Node => {
         // Migrate the import declerations
         if (ts.isImportDeclaration(node)) {
           const moduleSpecifier = node.moduleSpecifier
@@ -371,7 +372,6 @@ class FileTransformer {
 
             return ts.visitEachChild(
               ts.factory.createImportDeclaration(
-                undefined,
                 node.modifiers,
                 ts.factory.createImportClause(
                   node.importClause?.isTypeOnly ?? false,
@@ -381,7 +381,6 @@ class FileTransformer {
                   ) : node.importClause?.namedBindings,
                 ),
                 ts.factory.createStringLiteral('@paperback/types'),
-                node.assertClause,
               ),
               visitNode.bind(this),
               context,
@@ -392,6 +391,7 @@ class FileTransformer {
         if (ts.isCallExpression(node)) {
           const expression = node.expression
           if (ts.isIdentifier(expression)) {
+            // @ts-expect-error Does not return undefined
             return ts.visitEachChild(this.getRenamedTypeWrapper(node), visitNode.bind(this), context)
           }
         }
@@ -401,6 +401,7 @@ class FileTransformer {
         }
 
         if (ts.isPropertyAccessExpression(node)) {
+          // @ts-expect-error Does not return undefined
           return ts.visitEachChild(this.getRenamedPropertyAccessor(node), visitNode.bind(this), context)
         }
 

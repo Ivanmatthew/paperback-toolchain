@@ -88,4 +88,32 @@ export default {
       }
     }
   },
+
+  analyzeFolderRecursive(listOfPromises: Promise<any>[], folderPath: string, fileAnalysisFn: (filePath: string) => Promise<any> | void, folderAnalysisFn?: (folderPath: string) => Promise<any> | void) {
+    folderPath = folderPath.trim()
+    if (folderPath.length === 0 || folderPath === '/') return
+
+    if (fs.existsSync(folderPath)) {
+      for (const file of fs.readdirSync(folderPath)) {
+        const curPath = path.join(folderPath, file)
+        if (fs.lstatSync(curPath).isDirectory()) { // recurse
+          if (folderAnalysisFn) {
+            const result = folderAnalysisFn(curPath)
+            // Dude????
+            // eslint-disable-next-line max-depth
+            if (result) {
+              listOfPromises.push(result)
+            }
+          }
+
+          this.analyzeFolderRecursive(listOfPromises, curPath, fileAnalysisFn, folderAnalysisFn)
+        } else { // analyze file
+          const result = fileAnalysisFn(curPath)
+          if (result) {
+            listOfPromises.push(result)
+          }
+        }
+      }
+    }
+  },
 }
